@@ -6,6 +6,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+#include "pstat.h"
+
+extern struct proc proc[NPROC];  
+extern struct spinlock proc_lock;
 
 uint64
 sys_exit(void)
@@ -106,4 +110,77 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+extern int total_tickets; // Declarar a variável global se não estiver em um header
+extern struct spinlock total_tickets_lock;
+
+uint64
+sys_settickets(void)
+{
+  int number;
+  struct proc *p = myproc();
+
+  if(argint(0, &number) < 0)
+    return -1;
+
+  if(number < 1){
+    return -1;
+  }
+
+  // Atualizar o total de tickets global e do processo atual
+  acquire(&total_tickets_lock); 
+  
+  // Se o processo for RUNNABLE ou RUNNING, subtraímos os bilhetes antigos antes de somar os novos.
+  // Se for SLEEPING ou outra coisa, a atualização será feita quando ele se tornar RUNNABLE.
+  if (p->state == RUNNABLE || p->state == RUNNING) {
+      total_tickets -= p->tickets;
+      total_tickets += number;
+  }
+  
+  p->tickets = number;
+
+  release(&total_tickets_lock);
+
+  return 0; 
+}
+
+uint64
+sys_getpinfo(void)
+{
+  uint64 user_pstat_addr;
+  struct pstat ps;        
+  struct proc *p;
+  int i;
+
+  // Obter o endereço do ponteiro de usuário
+  if(argaddr(0, &user_pstat_addr) < 0)
+    return -1;
+
+  acquire(&proc_lock); 
+  
+  i = 0;
+  for(p = proc; p < &proc[NPROC]; p++){
+    
+    if(p->state != UNUSED){
+      ps.inuse[i] = 1;
+      ps.pid[i] = p->pid;
+      ps.tickets[i] = p->tickets;
+      ps.ticks[i] = p->ticks; 
+    } else {
+      ps.inuse[i] = 0;
+      ps.pid[i] = 0;
+      ps.tickets[i] = 0;
+      ps.ticks[i] = 0;
+    }
+    i++;
+  }
+  
+  release(&proc_lock);
+
+  // Copiar a estrutura preenchida do kernel para o espaço do usuário
+  if(copyout(myproc()->pagetable, user_pstat_addr, (char*)&ps, sizeof(ps)) < 0)
+    return -1;
+
+  return 0;
 }

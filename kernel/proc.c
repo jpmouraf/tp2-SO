@@ -6,6 +6,8 @@
 #include "proc.h"
 #include "defs.h"
 
+static uint64 next_random = 13;
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -14,6 +16,9 @@ struct proc *initproc;
 
 int nextpid = 1;
 struct spinlock pid_lock;
+
+int total_tickets;
+struct spinlock total_tickets_lock;  
 
 extern void forkret(void);
 static void freeproc(struct proc *p);
@@ -124,6 +129,8 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->tickets = 1; 
+  p->ticks = 0;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -279,6 +286,9 @@ kfork(void)
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
+  //Herança dos bilhetes
+  np->tickets = p->tickets;
+
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
 
@@ -301,6 +311,10 @@ kfork(void)
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
+
+  acquire(&total_tickets_lock);
+  total_tickets += np->tickets;
+  release(&total_tickets_lock);
 
   return pid;
 }
@@ -354,6 +368,10 @@ kexit(int status)
   wakeup(p->parent);
   
   acquire(&p->lock);
+
+  acquire(&total_tickets_lock);
+  total_tickets -= p->tickets;
+  release(&total_tickets_lock);
 
   p->xstate = status;
   p->state = ZOMBIE;
@@ -438,22 +456,52 @@ scheduler(void)
     intr_off();
 
     int found = 0;
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
+    //Obter o total de bilhetes em circulação
+    acquire(&total_tickets_lock);
+    int max_tickets = total_tickets;
+    release(&total_tickets_lock);
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
-      }
-      release(&p->lock);
+    if (max_tickets > 0) {
+        //Gerar o Bilhete Vencedor
+        uint64 winning_ticket = random_at_most(max_tickets);
+        
+        uint64 current_ticket_sum = 0;
+        struct proc *winner = 0;
+
+        //Varredura para encontrar o processo que detém o bilhete
+        for(p = proc; p < &proc[NPROC]; p++){
+            acquire(&p->lock);
+            
+            if(p->state == RUNNABLE){
+                current_ticket_sum += p->tickets;
+                
+                //Se o acumulado de tickets ultrapassar o bilhete vencedor, encontramos o processo que deve rodar.
+                if(current_ticket_sum >= winning_ticket){
+                    winner = p;
+                    // Se encontrarmos o vencedor, a trava do processo precisa ser mantida, então liberamos os outros processos.
+                    break;
+                }
+            }
+            release(&p->lock); // Libera o lock se o processo não for RUNNABLE ou não for o vencedor
+        }
+
+        //Executa o Vencedor
+        if(winner != 0){
+            p = winner;
+            p->state = RUNNING;
+            c->proc = p;
+            
+            // Troca de contexto
+            swtch(&c->context, &p->context);
+
+            // Processo retornou
+            c->proc = 0;
+          
+            release(&p->lock); 
+            
+            found = 1;
+        } else {
+        }
     }
     if(found == 0) {
       // nothing to run; stop running on this core until an interrupt.
