@@ -1,5 +1,5 @@
 #define SBRK_ERROR ((char *)-1)
-#include "pstat.h"
+#include "../kernel/pstat.h"
 
 struct stat;
 

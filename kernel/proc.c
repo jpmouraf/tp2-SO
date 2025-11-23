@@ -5,8 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
-
-static uint64 next_random = 13;
+#include "random.h"
 
 struct cpu cpus[NCPU];
 
@@ -30,6 +29,7 @@ extern char trampoline[]; // trampoline.S
 // memory model when using p->parent.
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
+struct spinlock proc_lock;
 
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
@@ -56,6 +56,7 @@ procinit(void)
   
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+  initlock(&proc_lock, "proc_lock");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
       p->state = UNUSED;
@@ -234,6 +235,10 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
+
+  acquire(&total_tickets_lock);
+  total_tickets += p->tickets;
+  release(&total_tickets_lock);
 
   release(&p->lock);
 }
